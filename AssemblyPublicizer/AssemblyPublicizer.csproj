@@ -8,7 +8,7 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>CabbageCrow.AssemblyPublicizer</RootNamespace>
     <AssemblyName>AssemblyPublicizer</AssemblyName>
-    <TargetFrameworkVersion>v4.6</TargetFrameworkVersion>
+    <TargetFramework>net8.0</TargetFramework>
     <FileAlignment>512</FileAlignment>
     <NuGetPackageImportStamp>
     </NuGetPackageImportStamp>
