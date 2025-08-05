@@ -1,300 +1,186 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
+﻿using System.CommandLine;
 using Mono.Cecil;
-using Mono.Options;
 
-/// <summary>
-/// AssemblyPublicizer - A tool to create a copy of an assembly in 
-/// which all members are public (types, methods, fields, getters
-/// and setters of properties).  
-/// 
-/// Copyright(c) 2018 CabbageCrow
-/// This library is free software; you can redistribute it and/or
-/// modify it under the terms of the GNU Lesser General Public
-/// License as published by the Free Software Foundation; either
-/// version 2.1 of the License, or(at your option) any later version.
-/// 
-/// Overview:
-/// https://tldrlegal.com/license/gnu-lesser-general-public-license-v2.1-(lgpl-2.1)
-/// 
-/// This library is distributed in the hope that it will be useful,
-/// but WITHOUT ANY WARRANTY; without even the implied warranty of
-///	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the GNU
-/// Lesser General Public License for more details.
-/// 
-/// You should have received a copy of the GNU Lesser General Public
-/// License along with this library; if not, write to the Free Software
-/// Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301
-/// USA
-/// </summary>
+var rootCommand = new RootCommand("AssemblyPublicizer - Makes all members of a .NET assembly public");
 
-namespace CabbageCrow.AssemblyPublicizer
+var inputOption = new Option<FileInfo>(
+    aliases: ["--input", "-i"],
+    description: "Path to input assembly"
+) { IsRequired = true };
+
+var outputOption = new Option<string>(
+    aliases: ["--output", "-o"],
+    description: "Path for output assembly"
+);
+
+var libsOption = new Option<string>(
+    aliases: ["--libs", "-l"],
+    description: "Path to dependencies directory"
+);
+
+var fullExceptionOption = new Option<bool>(
+    aliases: ["--fullexceptions", "-fe"],
+    description: "Show full exception stack trace"
+);
+
+var autoExitOption = new Option<bool>(
+    aliases: ["--exit", "-e"],
+    description: "Exit automatically without waiting for key"
+);
+
+rootCommand.AddOption(inputOption);
+rootCommand.AddOption(outputOption);
+rootCommand.AddOption(libsOption);
+rootCommand.AddOption(fullExceptionOption);
+rootCommand.AddOption(autoExitOption);
+
+rootCommand.SetHandler(async (input, output, libs, fullExceptions, autoExit) =>
 {
-	/// <summary>
-	/// Creates a copy of an assembly in which all members are public (types, methods, fields, getters and setters of properties).
-	/// If you use the modified assembly as your reference and compile your dll with the option "Allow unsafe code" enabled, 
-	/// you can access all private elements even when using the original assembly.
-	/// Without "Allow unsafe code" you get an access violation exception during runtime when accessing private members except for types.  
-	/// How to enable it: https://docs.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-options/unsafe-compiler-option
-	/// arg 0 / -i|--input:		Path to the assembly (absolute or relative)
-	/// arg 1 / -o|--output:	[Optional] Output path/filename
-	///							Can be just a (relative) path like "subdir1\subdir2"
-	///							Can be just a filename like "CustomFileName.dll"
-	///							Can be a filename with path like "C:\subdir1\subdir2\CustomFileName.dll"
-	/// </summary>
-	public class AssemblyPublicizer
-	{
-		private static bool _automaticExit, _help;
+    const string suffix = "_publicized";
+    const string defaultOutputDir = "publicized_assemblies";
 
-		public static void Main(string[] args)
-		{
-			const string suffix = "_publicized";
-			const string defaultOutputDir = "publicized_assemblies";
+    if (!input.Exists)
+    {
+        Console.WriteLine("ERROR! File doesn't exist.");
+        Exit(autoExit, 1);
+    }
 
-			string input = string.Empty;
-			string libs = string.Empty;
-			string output = string.Empty;
-			bool fullExceptions = false;
+    string outputPath = "";
+    string outputName = "";
 
-			var options = new OptionSet
-			{
-				{ "i|input=", "Path (relative or absolute) to the input assembly", i => input = i }, 
-				{ "o|output=", "Path/dir/filename for the output assembly", o => output = o },
-				{ "l|libs=", "Path/dir for the libs (dependencies)", l => libs = l},
-				{ "fe|fullexceptions=", "True/False, if true - writes full exception", fe =>
-				{
-					if (!bool.TryParse(fe.ToLower(), out fullExceptions))
-						fullExceptions = false;
-				}},
-				{ "e|exit", "Application should automatically exit", e => _automaticExit = e != null}, 
-				{ "h|help", "Show this message", h => _help = h != null}
-			};
+    if (!string.IsNullOrWhiteSpace(output))
+    {
+        outputPath = Path.GetDirectoryName(output);
+        outputName = Path.GetFileName(output);
+    }
 
+    AssemblyDefinition assembly;
 
-			Console.WriteLine();
+    try
+    {
+        var resolver = new DefaultAssemblyResolver();
+        resolver.AddSearchDirectory(!string.IsNullOrEmpty(libs) ? libs : input.DirectoryName);
 
-			try
-			{
-				// parse the command line
-				var extra = options.Parse(args);
+        var reader = new ReaderParameters
+        {
+            AssemblyResolver = resolver,
+            ReadSymbols = false
+        };
 
-				if (_help)
-					ShowHelp(options);
+        assembly = AssemblyDefinition.ReadAssembly(input.FullName, reader);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine("ERROR! Failed to load assembly.");
+        if (fullExceptions)
+            Console.WriteLine(ex);
+        Exit(autoExit, 2);
+        return;
+    }
 
-				if (input == "" && extra.Any())
-					input = extra[0];
+    var allTypes = GetAllTypes(assembly.MainModule);
+    var allMethods = allTypes.SelectMany(t => t.Methods);
+    var allFields = allTypes.SelectMany(t => t.Fields);
 
-				if (input == "")
-					throw new OptionException();
+    int count = 0;
+    
+    foreach (var type in allTypes)
+    {
+        if (type is { IsPublic: false, IsNestedPublic: false })
+        {
+            count++;
+            if (type.IsNested)
+                type.IsNestedPublic = true;
+            else
+                type.IsPublic = true;
+        }
+    }
+    Console.WriteLine($"Changed {count} types to public.");
 
-				if (output == "" && extra.Count >= 2)
-					output = extra[1];
-			}
-			catch (OptionException)
-			{
-				// output some error message
-				Console.WriteLine("ERROR! Incorrect arguments. You need to provide the path to the assembly to publicize.");
-				Console.WriteLine("On Windows you can even drag and drop the assembly on the .exe.");
-				Console.WriteLine("Try `--help' for more information.");
-				Exit(10);
-			}
+    count = 0;
+    
+    int getters = 0;
+    int setters = 0;
+    
+    foreach (var method in allMethods)
+    {
+        if (!method.IsPublic)
+        {
+            count++;
 
+            if (method.Name.StartsWith("get_"))
+                getters++;
+            else if (method.Name.StartsWith("set_"))
+                setters++;
+            
+            method.IsPublic = true;
+        }
+    }
+    Console.WriteLine($"Changed {count} methods to public of which {getters} are getters and {setters} are setters.");
 
-			var inputFile = input;
-			AssemblyDefinition assembly = null;
-			string outputPath = "", outputName = "";
+    count = 0;
+    foreach (var field in allFields)
+    {
+        if (!field.IsPublic && field.DeclaringType.Events.All(e => e.Name != field.Name))
+        {
+            count++;
+            field.IsPublic = true;
+        }
+    }
+    Console.WriteLine($"Changed {count} fields to public.");
 
+    if (string.IsNullOrWhiteSpace(outputName))
+    {
+        outputName = Path.GetFileNameWithoutExtension(input.Name) + suffix + input.Extension;
+        Console.WriteLine($"Using default output name: {outputName}");
+    }
 
-			if (output != "")
-			{
-				try
-				{
-					outputPath = Path.GetDirectoryName(output);
-					outputName = Path.GetFileName(output);
-				}
-				catch(Exception)
-				{
-					Console.WriteLine("ERROR! Invalid output argument.");
-					Exit(20);
-				}
-			}
+    if (string.IsNullOrWhiteSpace(outputPath))
+    {
+        outputPath = defaultOutputDir;
+        Console.WriteLine($"Using default output directory: {outputPath}");
+    }
 
+    var finalPath = Path.Combine(outputPath, outputName);
 
-			if (!File.Exists(inputFile))
-			{
-				Console.WriteLine();
-				Console.WriteLine("ERROR! File doesn't exist or you don't have sufficient permissions.");
-				Exit(30);
-			}
+    try
+    {
+        Directory.CreateDirectory(outputPath);
+        assembly.Write(finalPath);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine("ERROR! Failed to save modified assembly.");
+        if (fullExceptions)
+            Console.WriteLine(ex);
+        Exit(autoExit, 3);
+    }
 
-			try
-			{
-				var resolver = new DefaultAssemblyResolver();
+    Console.WriteLine("Publicization complete.");
+    Exit(autoExit, 0);
+}, inputOption, outputOption, libsOption, fullExceptionOption, autoExitOption);
 
-				resolver.AddSearchDirectory(string.IsNullOrEmpty(libs) ? Path.GetDirectoryName(input) : libs);
+return await rootCommand.InvokeAsync(args);
 
-				var reader = new ReaderParameters
-				{
-					AssemblyResolver = resolver,
-					ReadSymbols = false
-				};
-				
-				assembly = AssemblyDefinition.ReadAssembly(inputFile, reader);
-			}
-			catch (Exception)
-			{
-				Console.WriteLine();
-				Console.WriteLine("ERROR! Cannot read the assembly. Please check your permissions.");
-				Exit(40);
-			}
-			
-			var allTypes = GetAllTypes(assembly.MainModule);
-			var allMethods = allTypes.SelectMany(t => t.Methods);
-			var allFields = allTypes.SelectMany(t => t.Fields);
+static void Exit(bool autoExit, int code)
+{
+    if (!autoExit)
+    {
+        Console.WriteLine("Press any key to exit...");
+        Console.ReadKey();
+    }
+    Environment.Exit(code);
+}
 
-			const string reportString = "Changed {0} {1} to public.";
+static IEnumerable<TypeDefinition> GetAllTypes(ModuleDefinition module)
+{
+    return GetAllNestedTypes(module.Types);
+}
 
-			#region Make everything public
-
-			var count = 0;
-			foreach (var type in allTypes)
-			{
-				if (!type?.IsPublic ?? false && !type.IsNestedPublic)
-				{
-					count++;
-					if (type.IsNested)
-						type.IsNestedPublic = true;
-					else
-						type.IsPublic = true;
-				}
-			}
-			Console.WriteLine(reportString, count, "types");
-
-			count = 0;
-			foreach (var method in allMethods)
-			{
-				if (!method?.IsPublic ?? false)
-				{
-					count++;
-					method.IsPublic = true;
-				}
-			}
-			Console.WriteLine(reportString, count, "methods (including getters and setters)");
-
-			count = 0;
-			foreach (var field in allFields)
-			{
-				if (!field?.IsPublic ?? false)
-				{
-					if (field.DeclaringType.Events.Any(e => e.Name == field.Name))
-						continue; // Skipping event delegates
-					
-					count++;
-					field.IsPublic = true;
-				}
-			}
-			Console.WriteLine(reportString, count, "fields");
-
-			#endregion
-
-
-			Console.WriteLine();
-
-			if (outputName == "")
-			{
-				outputName = $"{Path.GetFileNameWithoutExtension(inputFile)}{suffix}{Path.GetExtension(inputFile)}";
-				Console.WriteLine($"Info: Use default output name: \"{outputName}\"");
-			}
-
-			if(outputPath == "")
-			{
-				outputPath = defaultOutputDir;
-				Console.WriteLine($"Info: Use default output dir: \"{outputPath}\"");
-			}
-
-			Console.WriteLine("Saving a copy of the modified assembly ...");
-
-			var outputFile = Path.Combine(outputPath, outputName);
-
-			try
-			{
-				if (outputPath != "" && !Directory.Exists(outputPath))
-					Directory.CreateDirectory(outputPath);
-				assembly.Write(outputFile);
-			}
-			catch (Exception e)
-			{
-				Console.WriteLine();
-				Console.WriteLine("ERROR! Cannot create/overwrite the new assembly. ");
-				Console.WriteLine("Please check the path and its permissions " +
-					"and in case of overwriting an existing file ensure that it isn't currently used.");
-
-				if (fullExceptions)
-					Console.WriteLine(e);
-				
-				Exit(50);
-			}
-
-			Console.WriteLine("Completed.");
-			Console.WriteLine();
-			Console.WriteLine("Use the publicized library as your reference and compile your dll with the ");
-			Console.WriteLine("option \"Allow unsafe code\" enabled.");
-			Console.WriteLine("Without it you get an access violation exception during runtime when accessing");
-			Console.WriteLine("private members except for types.");
-			Exit();
-		}
-
-		private static void Exit(int exitCode = 0)
-		{
-			if (!_automaticExit)
-			{
-				Console.WriteLine();
-				Console.WriteLine("Press any key to exit ...");
-				Console.ReadKey();
-			}
-			Environment.Exit(exitCode);
-		}
-
-		private static void ShowHelp(OptionSet p)
-		{
-			Console.WriteLine("Usage: AssemblyPublicizer.exe [Options]+");
-			Console.WriteLine("Creates a copy of an assembly in which all members are public.");
-			Console.WriteLine("An input path must be provided, the other options are optional.");
-			Console.WriteLine("You can use it without the option identifiers;");
-			Console.WriteLine("If so, the first argument is for input and the optional second one for output.");
-			Console.WriteLine();
-			Console.WriteLine("Options:");
-			p.WriteOptionDescriptions(Console.Out);
-			Exit();
-		}
-
-		/// <summary>
-		/// Method which returns all Types of the given module, including nested ones (recursively)
-		/// </summary>
-		/// <param name="moduleDefinition"></param>
-		/// <returns></returns>
-		private static IEnumerable<TypeDefinition> GetAllTypes(ModuleDefinition moduleDefinition)
-		{
-			return GetAllNestedTypes(moduleDefinition.Types);//.Reverse();
-		}
-
-		/// <summary>
-		/// Recursive method to get all nested types. Use <see cref="GetAllTypes(ModuleDefinition)"/>
-		/// </summary>
-		/// <param name="typeDefinitions"></param>
-		/// <returns></returns>
-		private static IEnumerable<TypeDefinition> GetAllNestedTypes(IEnumerable<TypeDefinition> typeDefinitions)
-		{
-			//return typeDefinitions.SelectMany(t => t.NestedTypes);
-
-			if (typeDefinitions?.Count() == 0)
-				return new List<TypeDefinition>();
-
-			var result = typeDefinitions.Concat(GetAllNestedTypes(typeDefinitions.SelectMany(t => t.NestedTypes)));
-
-			return result;			
-		}
-	}
+static IEnumerable<TypeDefinition> GetAllNestedTypes(IEnumerable<TypeDefinition> types)
+{
+    if (!types.Any()) 
+        return [];
+    
+    return types.Concat(GetAllNestedTypes(types.SelectMany(t => t.NestedTypes)));
 }
