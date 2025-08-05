@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 using Mono.Cecil;
 using Mono.Options;
 
@@ -45,45 +44,52 @@ namespace CabbageCrow.AssemblyPublicizer
 	///							Can be just a filename like "CustomFileName.dll"
 	///							Can be a filename with path like "C:\subdir1\subdir2\CustomFileName.dll"
 	/// </summary>
-	class AssemblyPublicizer
+	public class AssemblyPublicizer
 	{
-		static bool automaticExit, help;
+		private static bool _automaticExit, _help;
 
-		static void Main(string[] args)
+		public static void Main(string[] args)
 		{
-			var suffix = "_publicized";
-			var defaultOutputDir = "publicized_assemblies";
+			const string suffix = "_publicized";
+			const string defaultOutputDir = "publicized_assemblies";
 
-			var input = "";
-			string output = "";
+			string input = string.Empty;
+			string libs = string.Empty;
+			string output = string.Empty;
+			bool fullExceptions = false;
 
 			var options = new OptionSet
 			{
 				{ "i|input=", "Path (relative or absolute) to the input assembly", i => input = i }, 
-				{ "o|output=", "Path/dir/filename for the output assembly", o => output = o }, 
-				{ "e|exit", "Application should automatically exit", e => automaticExit = e != null}, 
-				{ "h|help", "Show this message", h => help = h != null}
+				{ "o|output=", "Path/dir/filename for the output assembly", o => output = o },
+				{ "l|libs=", "Path/dir for the libs (dependencies)", l => libs = l},
+				{ "fe|fullexceptions=", "True/False, if true - writes full exception", fe =>
+				{
+					if (!bool.TryParse(fe.ToLower(), out fullExceptions))
+						fullExceptions = false;
+				}},
+				{ "e|exit", "Application should automatically exit", e => _automaticExit = e != null}, 
+				{ "h|help", "Show this message", h => _help = h != null}
 			};
 
 
 			Console.WriteLine();
 
-			List<string> extra;
 			try
 			{
 				// parse the command line
-				extra = options.Parse(args);
+				var extra = options.Parse(args);
 
-				if (help)
+				if (_help)
 					ShowHelp(options);
 
-				if (input == "" && extra.Count() >= 1)
+				if (input == "" && extra.Any())
 					input = extra[0];
 
 				if (input == "")
 					throw new OptionException();
 
-				if (output == "" && extra.Count() >= 2)
+				if (output == "" && extra.Count >= 2)
 					output = extra[1];
 			}
 			catch (OptionException)
@@ -125,7 +131,17 @@ namespace CabbageCrow.AssemblyPublicizer
 
 			try
 			{
-				assembly = AssemblyDefinition.ReadAssembly(inputFile);
+				var resolver = new DefaultAssemblyResolver();
+
+				resolver.AddSearchDirectory(string.IsNullOrEmpty(libs) ? Path.GetDirectoryName(input) : libs);
+
+				var reader = new ReaderParameters
+				{
+					AssemblyResolver = resolver,
+					ReadSymbols = false
+				};
+				
+				assembly = AssemblyDefinition.ReadAssembly(inputFile, reader);
 			}
 			catch (Exception)
 			{
@@ -133,18 +149,16 @@ namespace CabbageCrow.AssemblyPublicizer
 				Console.WriteLine("ERROR! Cannot read the assembly. Please check your permissions.");
 				Exit(40);
 			}
-
-
+			
 			var allTypes = GetAllTypes(assembly.MainModule);
 			var allMethods = allTypes.SelectMany(t => t.Methods);
 			var allFields = allTypes.SelectMany(t => t.Fields);
 
-			int count;
-			string reportString = "Changed {0} {1} to public.";
+			const string reportString = "Changed {0} {1} to public.";
 
 			#region Make everything public
 
-			count = 0;
+			var count = 0;
 			foreach (var type in allTypes)
 			{
 				if (!type?.IsPublic ?? false && !type.IsNestedPublic)
@@ -174,6 +188,9 @@ namespace CabbageCrow.AssemblyPublicizer
 			{
 				if (!field?.IsPublic ?? false)
 				{
+					if (field.DeclaringType.Events.Any(e => e.Name == field.Name))
+						continue; // Skipping event delegates
+					
 					count++;
 					field.IsPublic = true;
 				}
@@ -187,15 +204,14 @@ namespace CabbageCrow.AssemblyPublicizer
 
 			if (outputName == "")
 			{
-				outputName = String.Format("{0}{1}{2}",
-					Path.GetFileNameWithoutExtension(inputFile), suffix, Path.GetExtension(inputFile));
-				Console.WriteLine(@"Info: Use default output name: ""{0}""", outputName);
+				outputName = $"{Path.GetFileNameWithoutExtension(inputFile)}{suffix}{Path.GetExtension(inputFile)}";
+				Console.WriteLine($"Info: Use default output name: \"{outputName}\"");
 			}
 
 			if(outputPath == "")
 			{
 				outputPath = defaultOutputDir;
-				Console.WriteLine(@"Info: Use default output dir: ""{0}""", outputPath);
+				Console.WriteLine($"Info: Use default output dir: \"{outputPath}\"");
 			}
 
 			Console.WriteLine("Saving a copy of the modified assembly ...");
@@ -208,27 +224,31 @@ namespace CabbageCrow.AssemblyPublicizer
 					Directory.CreateDirectory(outputPath);
 				assembly.Write(outputFile);
 			}
-			catch (Exception)
+			catch (Exception e)
 			{
 				Console.WriteLine();
 				Console.WriteLine("ERROR! Cannot create/overwrite the new assembly. ");
 				Console.WriteLine("Please check the path and its permissions " +
 					"and in case of overwriting an existing file ensure that it isn't currently used.");
+
+				if (fullExceptions)
+					Console.WriteLine(e);
+				
 				Exit(50);
 			}
 
 			Console.WriteLine("Completed.");
 			Console.WriteLine();
 			Console.WriteLine("Use the publicized library as your reference and compile your dll with the ");
-			Console.WriteLine(@"option ""Allow unsafe code"" enabled.");
-			Console.WriteLine(@"Without it you get an access violation exception during runtime when accessing");
+			Console.WriteLine("option \"Allow unsafe code\" enabled.");
+			Console.WriteLine("Without it you get an access violation exception during runtime when accessing");
 			Console.WriteLine("private members except for types.");
-			Exit(0);
+			Exit();
 		}
 
-		public static void Exit(int exitCode = 0)
+		private static void Exit(int exitCode = 0)
 		{
-			if (!automaticExit)
+			if (!_automaticExit)
 			{
 				Console.WriteLine();
 				Console.WriteLine("Press any key to exit ...");
@@ -247,7 +267,7 @@ namespace CabbageCrow.AssemblyPublicizer
 			Console.WriteLine();
 			Console.WriteLine("Options:");
 			p.WriteOptionDescriptions(Console.Out);
-			Exit(0);
+			Exit();
 		}
 
 		/// <summary>
@@ -255,9 +275,9 @@ namespace CabbageCrow.AssemblyPublicizer
 		/// </summary>
 		/// <param name="moduleDefinition"></param>
 		/// <returns></returns>
-		public static IEnumerable<TypeDefinition> GetAllTypes(ModuleDefinition moduleDefinition)
+		private static IEnumerable<TypeDefinition> GetAllTypes(ModuleDefinition moduleDefinition)
 		{
-			return _GetAllNestedTypes(moduleDefinition.Types);//.Reverse();
+			return GetAllNestedTypes(moduleDefinition.Types);//.Reverse();
 		}
 
 		/// <summary>
@@ -265,18 +285,16 @@ namespace CabbageCrow.AssemblyPublicizer
 		/// </summary>
 		/// <param name="typeDefinitions"></param>
 		/// <returns></returns>
-		private static IEnumerable<TypeDefinition> _GetAllNestedTypes(IEnumerable<TypeDefinition> typeDefinitions)
+		private static IEnumerable<TypeDefinition> GetAllNestedTypes(IEnumerable<TypeDefinition> typeDefinitions)
 		{
 			//return typeDefinitions.SelectMany(t => t.NestedTypes);
 
 			if (typeDefinitions?.Count() == 0)
 				return new List<TypeDefinition>();
 
-			var result = typeDefinitions.Concat(_GetAllNestedTypes(typeDefinitions.SelectMany(t => t.NestedTypes)));
+			var result = typeDefinitions.Concat(GetAllNestedTypes(typeDefinitions.SelectMany(t => t.NestedTypes)));
 
 			return result;			
 		}
-
-
 	}
 }

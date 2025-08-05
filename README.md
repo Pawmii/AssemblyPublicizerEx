@@ -1,7 +1,12 @@
-# Assembly Publicizer
+# Assembly Publicizer Ex (Fork by Pawmi)
+
+## Why fork?
+
+The original AssemblyPublicizer publishes events and their delegates, but they have the same names and therefore the compiler throws an error when trying to access them, the fork fixes this problem.
+Also in the fork there is an option to specify the path for dependencies, because if they are not in the same folder there will be an error, the fork fixes this problem
 
 ## What is it for?
-  
+
 A tool to create a copy of an assembly in which **all members are public** (types, methods, fields, getters and setters of properties).  
   
 The intended usage is for modding in Unity(*), because this way you can **access everything normally without the use of reflection** or some helper classes.  
@@ -21,9 +26,9 @@ The **second argument is optional** and contains the **output path and/or filena
 * It can be just a filename like `CustomFileName.dll`  
 * It can be a filename with path like `C:\dir1\dir2\CustomFileName.dll`  
   If omited, it creates the modified assembly with an `_publicized` suffix in the subdirectory `publicized_assemblies`.  
-  
+
 ### How to "Allow unsafe code" in Visual Studio
-See the following link:  
+See the following link:
 https://docs.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-options/unsafe-compiler-option  
   
 ## Command line options
@@ -33,12 +38,14 @@ You can use it without the option identifiers; If so, the first argument is for 
 
 Options:
 
-|  -short, --long            | Description                                       |
-| -------------------------- | ------------------------------------------------- |
-|  -i, --input=VALUE         | Path (relative or absolute) to the input assembly |
-|  -o, --output=VALUE        | Path/dir/filename for the output assembly         |
-|  -e, --exit                | Application should automatically exit             |
-|  -h, --help                | Show this message and exit                        |
+| -short, --long              | Description                                       |
+|-----------------------------|---------------------------------------------------|
+| -i, --input=VALUE           | Path (relative or absolute) to the input assembly |
+| -o, --output=VALUE          | Path/dir/filename for the output assembly         |
+| -l, --libs                  | Path/dir for the libs (dependencies)              |
+| -fe, --fullexceptions=VALUE | True/False, if True - writes full exception       |
+| -e, --exit                  | Application should automatically exit             |
+| -h, --help                  | Show this message and exit                        |
 
 ## Support me
 If you like my work, spread the word so more people can enjoy it.  
